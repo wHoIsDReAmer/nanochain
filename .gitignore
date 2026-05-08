@@ -1,0 +1,43 @@
+/target
+**/target
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock: 바이너리 크레이트(nanochain-node)가 있으니 커밋 유지
+
+/dist
+/out
+*.profraw          # llvm-cov / source-based coverage
+*.profdata
+tarpaulin-report.* # cargo-tarpaulin
+flamegraph.svg
+perf.data*
+
+/data
+/db
+*.sled
+*.rocksdb
+*.log
+*.pid
+keystore/
+*.key
+*.pem
+secrets.toml
+
+.env
+.env.*
+!.env.example
+
+.omc
+.omc/
+
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+.DS_Store
+Thumbs.db
+desktop.ini

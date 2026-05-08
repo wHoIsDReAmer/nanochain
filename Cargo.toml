@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/types",
+    "crates/mempool",
+    "crates/consensus",
+    "crates/storage",
+    "crates/network",
+    "crates/node",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+# commonware
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo" }
+
+# internal
+nanochain-types = { path = "crates/types" }
+nanochain-mempool = { path = "crates/mempool" }
+nanochain-consensus = { path = "crates/consensus" }
+nanochain-storage = { path = "crates/storage" }
+nanochain-network = { path = "crates/network" }
+
+# common
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+hex = "0.4"
+bincode = "1"

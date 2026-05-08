@@ -1,0 +1,14 @@
+[package]
+name = "nanochain-storage"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+nanochain-types = { workspace = true }
+commonware-storage = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
