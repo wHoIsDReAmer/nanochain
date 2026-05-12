@@ -108,7 +108,7 @@ mod tests {
             to: [2u8; 32],
             amount,
             nonce,
-            signature: vec![],
+            signature: None,
         }
     }
 

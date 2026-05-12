@@ -6,4 +6,6 @@ pub enum Error {
     InvalidTransaction(String),
     #[error("invalid block: {0}")]
     InvalidBlock(String),
+    #[error("invalid signature: {0}")]
+    InvalidSignature(String),
 }
