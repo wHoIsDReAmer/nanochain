@@ -1,9 +1,9 @@
 pub mod block;
-pub mod transaction;
-pub mod hash;
 pub mod error;
+pub mod hash;
+pub mod transaction;
 
 pub use block::Block;
-pub use transaction::Transaction;
-pub use hash::Hash;
 pub use error::Error;
+pub use hash::Hash;
+pub use transaction::Transaction;

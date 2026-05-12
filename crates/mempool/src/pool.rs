@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use nanochain_types::{Hash, Transaction};
+use std::collections::HashMap;
 
 pub struct Mempool {
     txs: HashMap<Hash, Transaction>,

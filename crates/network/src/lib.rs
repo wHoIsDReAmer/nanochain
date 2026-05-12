@@ -1,5 +1,5 @@
-pub mod peer;
 pub mod error;
+pub mod peer;
 
-pub use peer::Network;
 pub use error::Error;
+pub use peer::Network;

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use nanochain_types::{Block, Hash};
+use std::collections::HashMap;
 
 pub struct BlockStore {
     blocks: HashMap<Hash, Block>,
@@ -25,7 +25,9 @@ impl BlockStore {
     }
 
     pub fn get_by_height(&self, height: u64) -> Option<&Block> {
-        self.height_index.get(&height).and_then(|h| self.blocks.get(h))
+        self.height_index
+            .get(&height)
+            .and_then(|h| self.blocks.get(h))
     }
 
     pub fn tip(&self) -> Option<&Block> {

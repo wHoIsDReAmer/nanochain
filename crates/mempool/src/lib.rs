@@ -1,5 +1,5 @@
-pub mod pool;
 pub mod error;
+pub mod pool;
 
-pub use pool::Mempool;
 pub use error::Error;
+pub use pool::Mempool;
