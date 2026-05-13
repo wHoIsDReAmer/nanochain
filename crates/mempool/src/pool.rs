@@ -1,27 +1,118 @@
+use crate::Error;
 use nanochain_types::{Hash, Transaction};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+/// Default soft cap on how many transactions live in the pool at once.
+pub const DEFAULT_CAPACITY: usize = 1024;
+
+/// In-memory mempool with two indexes kept in sync:
+///
+/// * `txs`        — primary `hash → tx` lookup, gives O(1) dedup and removal
+///                 once a tx is mined into a block.
+/// * `by_sender`  — secondary `sender → BTreeMap<nonce, hash>` index. The
+///                 BTreeMap keeps nonces sorted so the block builder can walk
+///                 a sender's txs in execution order, and we can detect
+///                 same-nonce conflicts cheaply.
+///
+/// Both structures must stay in lockstep — every mutation method enforces it.
 pub struct Mempool {
     txs: HashMap<Hash, Transaction>,
+    by_sender: HashMap<[u8; 32], BTreeMap<u64, Hash>>,
+    capacity: usize,
 }
 
 impl Mempool {
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_CAPACITY)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
         Mempool {
-            txs: HashMap::new(),
+            txs: HashMap::with_capacity(capacity),
+            by_sender: HashMap::new(),
+            capacity,
         }
     }
 
-    pub fn insert(&mut self, tx: Transaction) {
-        self.txs.insert(tx.hash(), tx);
+    /// Validate and insert a transaction.
+    ///
+    /// Rejection reasons (in evaluation order):
+    /// 1. Invalid Ed25519 signature.
+    /// 2. `amount == 0` — pointless no-op.
+    /// 3. Same tx hash already pending.
+    /// 4. Same sender + same nonce already pending (no replace-by-fee yet).
+    /// 5. Capacity reached (no eviction yet — just reject).
+    pub fn insert(&mut self, tx: Transaction) -> Result<Hash, Error> {
+        tx.verify_signature()?;
+
+        if tx.amount == 0 {
+            return Err(Error::ZeroAmount);
+        }
+
+        let hash = tx.hash();
+        if self.txs.contains_key(&hash) {
+            return Err(Error::Duplicate);
+        }
+
+        if let Some(by_nonce) = self.by_sender.get(&tx.from) {
+            if by_nonce.contains_key(&tx.nonce) {
+                return Err(Error::NonceConflict { nonce: tx.nonce });
+            }
+        }
+
+        if self.txs.len() >= self.capacity {
+            return Err(Error::Full);
+        }
+
+        self.by_sender
+            .entry(tx.from)
+            .or_default()
+            .insert(tx.nonce, hash.clone());
+        self.txs.insert(hash.clone(), tx);
+        Ok(hash)
     }
 
-    pub fn remove(&mut self, hash: &Hash) {
-        self.txs.remove(hash);
+    /// Remove a transaction by hash, keeping both indexes consistent.
+    /// Returns the removed transaction if it was present.
+    pub fn remove(&mut self, hash: &Hash) -> Option<Transaction> {
+        let tx = self.txs.remove(hash)?;
+        if let Some(by_nonce) = self.by_sender.get_mut(&tx.from) {
+            by_nonce.remove(&tx.nonce);
+            if by_nonce.is_empty() {
+                self.by_sender.remove(&tx.from);
+            }
+        }
+        Some(tx)
     }
 
+    pub fn get(&self, hash: &Hash) -> Option<&Transaction> {
+        self.txs.get(hash)
+    }
+
+    pub fn contains(&self, hash: &Hash) -> bool {
+        self.txs.contains_key(hash)
+    }
+
+    /// All pending transactions; order is undefined (HashMap iteration).
     pub fn pending(&self) -> Vec<Transaction> {
         self.txs.values().cloned().collect()
+    }
+
+    /// Pending transactions from a single sender, in ascending nonce order.
+    /// Useful for block builders applying tx in execution order.
+    pub fn pending_from(&self, sender: &[u8; 32]) -> Vec<Transaction> {
+        let Some(by_nonce) = self.by_sender.get(sender) else {
+            return Vec::new();
+        };
+        by_nonce
+            .values()
+            .filter_map(|h| self.txs.get(h).cloned())
+            .collect()
+    }
+
+    /// Smallest nonce currently pending for `sender`, if any.
+    pub fn lowest_nonce(&self, sender: &[u8; 32]) -> Option<u64> {
+        self.by_sender.get(sender)?.keys().next().copied()
     }
 
     pub fn len(&self) -> usize {
@@ -31,10 +122,158 @@ impl Mempool {
     pub fn is_empty(&self) -> bool {
         self.txs.is_empty()
     }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 impl Default for Mempool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use rand_core::OsRng;
+
+    fn keypair() -> SigningKey {
+        SigningKey::generate(&mut OsRng)
+    }
+
+    fn signed_tx(signer: &SigningKey, amount: u64, nonce: u64) -> Transaction {
+        Transaction::signed(signer, [9u8; 32], amount, nonce)
+    }
+
+    #[test]
+    fn insert_signed_tx_succeeds() {
+        let mut pool = Mempool::new();
+        let tx = signed_tx(&keypair(), 100, 0);
+        assert!(pool.insert(tx).is_ok());
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn unsigned_tx_is_rejected() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        let tx = Transaction {
+            from: key.verifying_key().to_bytes(),
+            to: [9u8; 32],
+            amount: 1,
+            nonce: 0,
+            signature: None,
+        };
+        assert!(matches!(pool.insert(tx), Err(Error::InvalidSignature(_))));
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn zero_amount_is_rejected() {
+        let mut pool = Mempool::new();
+        let tx = signed_tx(&keypair(), 0, 0);
+        assert!(matches!(pool.insert(tx), Err(Error::ZeroAmount)));
+    }
+
+    #[test]
+    fn duplicate_hash_is_rejected() {
+        let mut pool = Mempool::new();
+        let tx = signed_tx(&keypair(), 100, 0);
+        pool.insert(tx.clone()).unwrap();
+        assert!(matches!(pool.insert(tx), Err(Error::Duplicate)));
+    }
+
+    #[test]
+    fn same_sender_same_nonce_is_rejected() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        pool.insert(signed_tx(&key, 100, 0)).unwrap();
+        // Different amount → different hash, but same sender + same nonce.
+        let conflict = signed_tx(&key, 200, 0);
+        assert!(matches!(
+            pool.insert(conflict),
+            Err(Error::NonceConflict { nonce: 0 })
+        ));
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn same_sender_different_nonce_both_accepted() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        pool.insert(signed_tx(&key, 100, 0)).unwrap();
+        pool.insert(signed_tx(&key, 200, 1)).unwrap();
+        pool.insert(signed_tx(&key, 300, 2)).unwrap();
+        assert_eq!(pool.len(), 3);
+    }
+
+    #[test]
+    fn pending_from_returns_nonce_sorted() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        // Insert out of nonce order on purpose.
+        pool.insert(signed_tx(&key, 30, 2)).unwrap();
+        pool.insert(signed_tx(&key, 10, 0)).unwrap();
+        pool.insert(signed_tx(&key, 20, 1)).unwrap();
+
+        let nonces: Vec<u64> = pool
+            .pending_from(&key.verifying_key().to_bytes())
+            .iter()
+            .map(|tx| tx.nonce)
+            .collect();
+        assert_eq!(nonces, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn lowest_nonce_tracks_min() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        let addr = key.verifying_key().to_bytes();
+        assert_eq!(pool.lowest_nonce(&addr), None);
+
+        pool.insert(signed_tx(&key, 1, 5)).unwrap();
+        pool.insert(signed_tx(&key, 1, 3)).unwrap();
+        pool.insert(signed_tx(&key, 1, 7)).unwrap();
+        assert_eq!(pool.lowest_nonce(&addr), Some(3));
+    }
+
+    #[test]
+    fn capacity_is_enforced() {
+        let mut pool = Mempool::with_capacity(2);
+        // Two different senders so nonces don't collide.
+        pool.insert(signed_tx(&keypair(), 1, 0)).unwrap();
+        pool.insert(signed_tx(&keypair(), 1, 0)).unwrap();
+        let overflow = signed_tx(&keypair(), 1, 0);
+        assert!(matches!(pool.insert(overflow), Err(Error::Full)));
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn remove_keeps_indexes_consistent() {
+        let mut pool = Mempool::new();
+        let key = keypair();
+        let addr = key.verifying_key().to_bytes();
+        let h1 = pool.insert(signed_tx(&key, 10, 0)).unwrap();
+        let h2 = pool.insert(signed_tx(&key, 20, 1)).unwrap();
+
+        // Remove nonce=0; lowest_nonce should advance to 1.
+        let removed = pool.remove(&h1).expect("present");
+        assert_eq!(removed.nonce, 0);
+        assert_eq!(pool.lowest_nonce(&addr), Some(1));
+
+        // Remove nonce=1; sender index entry should disappear entirely.
+        pool.remove(&h2).expect("present");
+        assert_eq!(pool.lowest_nonce(&addr), None);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn remove_missing_returns_none() {
+        let mut pool = Mempool::new();
+        let bogus = Hash::zero();
+        assert!(pool.remove(&bogus).is_none());
     }
 }
