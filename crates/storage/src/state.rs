@@ -34,16 +34,12 @@ impl StateStore {
         self.accounts.get(account).cloned().unwrap_or_default()
     }
 
-    /// Genesis / test helper: directly add to an account's balance, bypassing
-    /// transaction validation. Used to seed initial balances since regular
-    /// transfers can only move coins between existing accounts.
+    /// Seed a balance directly (genesis / tests only); bypasses validation.
     pub fn credit(&mut self, account: [u8; 32], amount: u64) {
         self.accounts.entry(account).or_default().balance += amount;
     }
 
-    /// Apply a single transaction. Validates signature, nonce, balance, and
-    /// recipient overflow *before* any mutation; partial application is
-    /// impossible — either everything succeeds or state is untouched.
+    /// Validate and apply atomically; state is untouched on `Err`.
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), Error> {
         tx.verify_signature()?;
 
@@ -63,10 +59,7 @@ impl StateStore {
             });
         }
 
-        // Self-transfer is a valid pattern (used to "cancel" a nonce or bump
-        // gas in real chains). The net balance change is zero, so an overflow
-        // check is meaningless — skip it. For distinct recipients, ensure
-        // the addition doesn't wrap u64.
+        // Self-transfer is net-zero, so overflow check applies only across accounts.
         if tx.from != tx.to {
             let to_balance = self.get_balance(&tx.to);
             if to_balance.checked_add(tx.amount).is_none() {
@@ -74,25 +67,23 @@ impl StateStore {
             }
         }
 
-        // All checks passed; apply.
         {
             let from = self.accounts.entry(tx.from).or_default();
             from.balance -= tx.amount;
             from.nonce += 1;
         }
+
         if tx.from != tx.to {
             let to = self.accounts.entry(tx.to).or_default();
             to.balance += tx.amount;
         } else {
-            // self-transfer: refund the just-debited amount so balance is unchanged.
+            // refund self-transfer (net zero)
             self.accounts.entry(tx.from).or_default().balance += tx.amount;
         }
         Ok(())
     }
 
-    /// Apply every transaction in a block atomically. If any transaction
-    /// fails validation, every prior tx in the block is rolled back and the
-    /// error is returned. A successful call commits the entire block.
+    /// Apply every tx atomically; any failure rolls the whole block back.
     pub fn apply_block(&mut self, block: &Block) -> Result<(), Error> {
         let snapshot = self.accounts.clone();
         for tx in &block.transactions {
@@ -162,7 +153,7 @@ mod tests {
         assert_eq!(state.get_balance(&alice), 70);
         assert_eq!(state.get_balance(&bob), 30);
         assert_eq!(state.get_nonce(&alice), 1);
-        assert_eq!(state.get_nonce(&bob), 0); // recipient nonce untouched
+        assert_eq!(state.get_nonce(&bob), 0); // recipient nonce unchanged
     }
 
     #[test]
@@ -172,7 +163,7 @@ mod tests {
         let mut state = StateStore::new();
         state.credit(alice, 100);
 
-        // alice's expected nonce is 0; submit nonce=5
+        // expected=0, submit=5
         let tx = Transaction::signed(&alice_key, [9u8; 32], 10, 5);
         let err = state.apply_transaction(&tx).unwrap_err();
         assert!(matches!(
@@ -214,7 +205,7 @@ mod tests {
         let bob = [9u8; 32];
         let mut state = StateStore::new();
         state.credit(alice, u64::MAX);
-        state.credit(bob, u64::MAX); // bob already at max
+        state.credit(bob, u64::MAX);
 
         let tx = Transaction::signed(&alice_key, bob, 1, 0);
         let err = state.apply_transaction(&tx).unwrap_err();
@@ -231,8 +222,8 @@ mod tests {
         let tx = Transaction::signed(&alice_key, alice, 30, 0);
         state.apply_transaction(&tx).unwrap();
 
-        assert_eq!(state.get_balance(&alice), 100); // unchanged
-        assert_eq!(state.get_nonce(&alice), 1); // bumped
+        assert_eq!(state.get_balance(&alice), 100);
+        assert_eq!(state.get_nonce(&alice), 1);
     }
 
     #[test]
@@ -281,14 +272,14 @@ mod tests {
         let mut state = StateStore::new();
         state.credit(alice, 100);
 
-        // Second tx has bad nonce — block must reject entirely.
+        // second tx has bad nonce → entire block must reject
         let block = block_with(vec![
             Transaction::signed(&alice_key, bob, 10, 0),
-            Transaction::signed(&alice_key, bob, 20, 99), // wrong nonce
+            Transaction::signed(&alice_key, bob, 20, 99),
         ]);
         assert!(state.apply_block(&block).is_err());
 
-        // First tx's effects must be rolled back too.
+        // first tx's effects must roll back too
         assert_eq!(state.get_balance(&alice), 100);
         assert_eq!(state.get_balance(&bob), 0);
         assert_eq!(state.get_nonce(&alice), 0);

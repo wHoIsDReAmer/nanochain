@@ -11,10 +11,8 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
-    /// Deterministic byte representation (112B fixed). Fields are encoded in
-    /// declaration order using little-endian for integers.
-    ///
-    /// TODO: replace with commonware-utils or a custom codec later.
+    /// 112-byte deterministic encoding (LE for integers).
+    /// TODO: swap for commonware-utils.
     pub fn to_bytes(&self) -> [u8; 112] {
         let mut buf = [0u8; 112];
         buf[0..8].copy_from_slice(&self.height.to_le_bytes());
@@ -119,7 +117,6 @@ mod tests {
 
     #[test]
     fn single_tx_root_is_tx_hash() {
-        // With a single leaf, the leaf itself is the root
         let t = tx(10, 0);
         let h = t.hash();
         assert_eq!(Block::compute_tx_root(&[t]), h);
@@ -129,7 +126,7 @@ mod tests {
     fn modifying_one_tx_changes_root() {
         let a = vec![tx(10, 0), tx(20, 1), tx(30, 2)];
         let mut b = a.clone();
-        b[1].amount = 999; // change a single transaction's amount
+        b[1].amount = 999;
         assert_ne!(Block::compute_tx_root(&a), Block::compute_tx_root(&b));
     }
 
@@ -152,7 +149,6 @@ mod tests {
 
     #[test]
     fn odd_layer_handled() {
-        // Three leaves: the last one gets duplicated to keep the layer even.
         let txs = vec![tx(1, 0), tx(2, 1), tx(3, 2)];
         let _ = Block::compute_tx_root(&txs);
     }

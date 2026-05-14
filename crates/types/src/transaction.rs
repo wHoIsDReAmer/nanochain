@@ -19,9 +19,8 @@ pub struct Transaction {
     pub signature: Option<[u8; SIGNATURE_LEN]>,
 }
 
-/// Serde adapter for `Option<[u8; 64]>` — serde lacks built-in `Deserialize`
-/// for arrays larger than 32 elements, so we bridge through `Option<Vec<u8>>`
-/// and enforce the exact 64-byte length on the way in.
+/// Bridges `Option<[u8; 64]>` through `Option<Vec<u8>>` because serde lacks
+/// built-in Deserialize for arrays past 32 elements. Length checked on read.
 mod option_sig_bytes {
     use super::SIGNATURE_LEN;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -64,11 +63,8 @@ impl Transaction {
         buf
     }
 
-    /// Deterministic byte representation. Fields are encoded in fixed order
-    /// using little-endian for integers; `signature` is encoded with a u64
-    /// length prefix (0 for `None`, 64 for `Some`) so it parses unambiguously.
-    ///
-    /// TODO: replace with commonware-utils or a custom codec later.
+    /// Deterministic encoding; `signature` is length-prefixed for safe parsing.
+    /// TODO: swap for commonware-utils.
     pub fn to_bytes(&self) -> Vec<u8> {
         let sig_len = self.signature.as_ref().map_or(0, |s| s.len());
         let mut buf = Vec::with_capacity(32 + 32 + 8 + 8 + 8 + sig_len);
@@ -87,8 +83,7 @@ impl Transaction {
         Hash::digest(&self.to_bytes())
     }
 
-    /// Build a transaction with `from` set to `signer`'s public key, then
-    /// sign it. After this call `verify_signature()` succeeds.
+    /// Build and sign in one step; `from` is set to `signer`'s public key.
     pub fn signed(signer: &SigningKey, to: [u8; 32], amount: u64, nonce: u64) -> Self {
         let from = signer.verifying_key().to_bytes();
         let mut tx = Transaction {
@@ -103,8 +98,7 @@ impl Transaction {
         tx
     }
 
-    /// Verify that `signature` is a valid Ed25519 signature over
-    /// `pure_payload()` produced by the key whose public bytes are in `from`.
+    /// Verify the Ed25519 signature against `from`'s public key.
     pub fn verify_signature(&self) -> Result<(), Error> {
         let sig_bytes = self
             .signature
@@ -139,7 +133,7 @@ mod tests {
     fn tampering_after_sign_fails_verify() {
         let key = keypair();
         let mut tx = Transaction::signed(&key, [9u8; 32], 100, 0);
-        tx.amount = 999_999; // bump amount after signing
+        tx.amount = 999_999; // tamper post-sign
         assert!(tx.verify_signature().is_err());
     }
 
