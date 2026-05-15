@@ -14,6 +14,8 @@ pub enum Error {
     InsufficientBalance { have: u64, need: u64 },
     #[error("balance overflow on recipient")]
     BalanceOverflow,
+    #[error("invalid coinbase: {0}")]
+    InvalidCoinbase(&'static str),
     #[error(transparent)]
     InvalidSignature(#[from] nanochain_types::Error),
 }

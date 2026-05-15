@@ -41,7 +41,13 @@ impl StateStore {
     }
 
     /// Validate and apply atomically; state is untouched on `Err`.
+    /// Coinbase tx must go through `apply_block` (only valid at genesis).
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), Error> {
+        if tx.is_coinbase() {
+            return Err(Error::InvalidCoinbase(
+                "coinbase must go through apply_block",
+            ));
+        }
         tx.verify_signature()?;
 
         let expected = self.get_nonce(&tx.from);
@@ -85,14 +91,33 @@ impl StateStore {
     }
 
     /// Apply every tx atomically; any failure rolls the whole block back.
+    /// Coinbase tx is only honored at height 0 (genesis).
     pub fn apply_block(&mut self, block: &Block) -> Result<(), Error> {
         let snapshot = self.accounts.clone();
         for tx in &block.transactions {
-            if let Err(e) = self.apply_transaction(tx) {
+            let result = if tx.is_coinbase() {
+                self.apply_coinbase(tx, block.header.height)
+            } else {
+                self.apply_transaction(tx)
+            };
+            if let Err(e) = result {
                 self.accounts = snapshot;
                 return Err(e);
             }
         }
+        Ok(())
+    }
+
+    /// Mint `tx.amount` to `tx.to`, no sender checks. Genesis-only for now.
+    fn apply_coinbase(&mut self, tx: &Transaction, height: u64) -> Result<(), Error> {
+        if height != 0 {
+            return Err(Error::InvalidCoinbase("only allowed at genesis"));
+        }
+        let to_balance = self.get_balance(&tx.to);
+        let new_balance = to_balance
+            .checked_add(tx.amount)
+            .ok_or(Error::BalanceOverflow)?;
+        self.accounts.entry(tx.to).or_default().balance = new_balance;
         Ok(())
     }
 }

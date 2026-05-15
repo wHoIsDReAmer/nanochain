@@ -8,6 +8,8 @@ pub enum Error {
     Full,
     #[error("zero-amount transaction is not allowed")]
     ZeroAmount,
+    #[error("coinbase transactions cannot enter the mempool")]
+    CoinbaseNotAllowed,
     #[error("nonce {nonce} is already pending for this sender")]
     NonceConflict { nonce: u64 },
     #[error(transparent)]

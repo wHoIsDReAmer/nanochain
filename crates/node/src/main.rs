@@ -76,6 +76,7 @@ impl DemoActors {
     fn genesis_config(&self) -> GenesisConfig {
         GenesisConfig {
             allocations: vec![(self.alice_addr(), 1_000), (self.bob_addr(), 500)],
+            timestamp: 0,
         }
     }
 
