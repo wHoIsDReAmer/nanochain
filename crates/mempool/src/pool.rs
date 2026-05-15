@@ -98,6 +98,11 @@ impl Mempool {
         self.by_sender.get(sender)?.keys().next().copied()
     }
 
+    /// All addresses that currently have pending tx.
+    pub fn senders(&self) -> Vec<[u8; 32]> {
+        self.by_sender.keys().copied().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.txs.len()
     }

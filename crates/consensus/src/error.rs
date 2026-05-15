@@ -6,4 +6,6 @@ pub enum Error {
     NotLeader,
     #[error("consensus timeout")]
     Timeout,
+    #[error(transparent)]
+    Types(#[from] nanochain_types::Error),
 }

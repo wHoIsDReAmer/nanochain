@@ -11,6 +11,7 @@ pub struct Account {
 
 /// In-memory account-model state store. Missing accounts read as
 /// `Account::default()` (balance=0, nonce=0).
+#[derive(Debug, Clone, Default)]
 pub struct StateStore {
     accounts: HashMap<[u8; 32], Account>,
 }
@@ -93,12 +94,6 @@ impl StateStore {
             }
         }
         Ok(())
-    }
-}
-
-impl Default for StateStore {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
