@@ -13,8 +13,7 @@ pub struct Transaction {
     pub to: [u8; 32],
     pub amount: u64,
     pub nonce: u64,
-    /// Ed25519 signature over `pure_payload()`. `None` means the transaction
-    /// is unsigned and will be rejected by `verify_signature()`.
+    /// Ed25519 signature over `pure_payload()`; `None` if unsigned.
     #[serde(with = "option_sig_bytes")]
     pub signature: Option<[u8; SIGNATURE_LEN]>,
 }
@@ -139,17 +138,15 @@ mod tests {
 
     #[test]
     fn signature_from_wrong_key_fails() {
-        // Sign with `attacker`, but pretend the tx is from `victim`.
         let victim = keypair();
         let attacker = keypair();
         let mut tx = Transaction::signed(&attacker, [9u8; 32], 100, 0);
-        tx.from = victim.verifying_key().to_bytes();
+        tx.from = victim.verifying_key().to_bytes(); // claim a different sender
         assert!(tx.verify_signature().is_err());
     }
 
     #[test]
     fn garbage_signature_bytes_fail_verify() {
-        // Right length but bogus content — must be rejected.
         let key = keypair();
         let mut tx = Transaction::signed(&key, [9u8; 32], 100, 0);
         tx.signature = Some([0xff; SIGNATURE_LEN]);
@@ -174,7 +171,6 @@ mod tests {
 
     #[test]
     fn pure_payload_excludes_signature_field() {
-        // Two txs identical except for signature bytes must share pure_payload.
         let key = keypair();
         let tx1 = Transaction::signed(&key, [9u8; 32], 100, 0);
         let mut tx2 = tx1.clone();

@@ -41,8 +41,8 @@ impl SignedBlock {
     }
 }
 
-/// Bridges `[u8; 64]` through `Vec<u8>` cuz of serde lacks built-in
-/// Deserialize for arrays past 32 elements. Length checked on read.
+/// Bridges `[u8; 64]` through `Vec<u8>`: serde lacks built-in Deserialize
+/// for arrays past 32 elements. Length checked on read.
 mod sig_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
