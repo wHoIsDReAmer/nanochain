@@ -156,3 +156,76 @@ impl Node {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand_core::OsRng;
+
+    fn keypair() -> SigningKey {
+        SigningKey::generate(&mut OsRng)
+    }
+
+    fn addr(k: &SigningKey) -> [u8; 32] {
+        k.verifying_key().to_bytes()
+    }
+
+    #[test]
+    fn fresh_node_tip_is_genesis() {
+        let node = Node::bootstrap(GenesisConfig::default(), keypair());
+        assert_eq!(node.tip_height(), 0);
+        assert_eq!(node.pending_tx_count(), 0);
+    }
+
+    #[test]
+    fn bootstrap_applies_genesis_allocations() {
+        let alice = [1u8; 32];
+        let genesis = GenesisConfig {
+            allocations: vec![(alice, 1_000)],
+        };
+        let node = Node::bootstrap(genesis, keypair());
+        assert_eq!(node.balance(&alice), 1_000);
+    }
+
+    #[test]
+    fn submit_tx_admits_signed_tx() {
+        let mut node = Node::bootstrap(GenesisConfig::default(), keypair());
+        let tx = Transaction::signed(&keypair(), [9u8; 32], 100, 0);
+        node.submit_tx(tx).expect("admitted");
+        assert_eq!(node.pending_tx_count(), 1);
+    }
+
+    #[test]
+    fn submit_tx_rejects_unsigned() {
+        let mut node = Node::bootstrap(GenesisConfig::default(), keypair());
+        let tx = Transaction {
+            from: [1u8; 32],
+            to: [2u8; 32],
+            amount: 1,
+            nonce: 0,
+            signature: None,
+        };
+        assert!(node.submit_tx(tx).is_err());
+        assert_eq!(node.pending_tx_count(), 0);
+    }
+
+    #[test]
+    fn produce_block_advances_tip_and_moves_funds() {
+        let alice = keypair();
+        let bob = [9u8; 32];
+        let genesis = GenesisConfig {
+            allocations: vec![(addr(&alice), 1_000)],
+        };
+        let mut node = Node::bootstrap(genesis, keypair());
+
+        node.submit_tx(Transaction::signed(&alice, bob, 300, 0))
+            .unwrap();
+        node.produce_block(1).expect("produce_block");
+
+        assert_eq!(node.tip_height(), 1);
+        assert_eq!(node.balance(&addr(&alice)), 700);
+        assert_eq!(node.balance(&bob), 300);
+        // included tx is dropped from the mempool
+        assert_eq!(node.pending_tx_count(), 0);
+    }
+}

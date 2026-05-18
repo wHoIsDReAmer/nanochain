@@ -91,3 +91,52 @@ impl<E: Context> Network<E> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_runtime::{deterministic, Clock as _, Runner as _, Supervisor as _};
+    use std::time::Duration;
+
+    /// On the deterministic runtime, two networks handshake and a message
+    /// broadcast by one is received by the other.
+    #[test]
+    fn broadcast_round_trip() {
+        let runner = deterministic::Runner::default();
+        runner.start(|context| async move {
+            let addr_a = "127.0.0.1:5001".parse().unwrap();
+            let addr_b = "127.0.0.1:5002".parse().unwrap();
+            let roster = vec![(1u64, addr_a), (2u64, addr_b)];
+
+            let ctx_a = context.child("a");
+            let ctx_b = context.child("b");
+            let mut net_a = Network::start(
+                &ctx_a,
+                &NetworkConfig {
+                    seed: 1,
+                    listen: addr_a,
+                    peers: roster.clone(),
+                },
+            )
+            .await;
+            let mut net_b = Network::start(
+                &ctx_b,
+                &NetworkConfig {
+                    seed: 2,
+                    listen: addr_b,
+                    peers: roster,
+                },
+            )
+            .await;
+
+            // Broadcast until A reaches B (handshake settles), then B receives.
+            loop {
+                if net_a.broadcast(b"hello".to_vec()).await > 0 {
+                    break;
+                }
+                context.sleep(Duration::from_millis(200)).await;
+            }
+            assert_eq!(net_b.recv().await, Some(b"hello".to_vec()));
+        });
+    }
+}
