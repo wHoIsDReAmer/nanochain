@@ -1730,7 +1730,8 @@ dependencies = [
  "commonware-cryptography",
  "commonware-p2p",
  "commonware-runtime",
- "nanochain-types",
+ "commonware-utils",
+ "rand_core 0.6.4",
  "thiserror",
  "tokio",
  "tracing",
@@ -1740,12 +1741,8 @@ dependencies = [
 name = "nanochain-node"
 version = "0.1.0"
 dependencies = [
- "commonware-cryptography",
- "commonware-p2p",
  "commonware-runtime",
- "commonware-utils",
  "ed25519-dalek",
- "hex",
  "nanochain-consensus",
  "nanochain-mempool",
  "nanochain-network",

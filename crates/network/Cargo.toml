@@ -7,10 +7,11 @@ edition.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-nanochain-types = { workspace = true }
 commonware-p2p = { workspace = true }
 commonware-cryptography = { workspace = true }
 commonware-runtime = { workspace = true }
+commonware-utils = { workspace = true }
+rand_core = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

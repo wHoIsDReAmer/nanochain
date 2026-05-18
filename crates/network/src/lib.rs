@@ -1,5 +1,5 @@
-pub mod error;
-pub mod peer;
+pub mod config;
+pub mod net;
 
-pub use error::Error;
-pub use peer::Network;
+pub use config::NetworkConfig;
+pub use net::Network;
