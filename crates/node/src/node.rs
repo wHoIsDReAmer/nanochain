@@ -5,11 +5,15 @@ use nanochain_network::{Network, NetworkConfig};
 use nanochain_storage::{BlockStore, StateStore};
 use nanochain_types::{Block, Hash, Transaction};
 use std::time::Duration;
+use tokio::select;
 use tracing::info;
 
 use crate::{error::Error, genesis::GenesisConfig};
 
 const MAX_TXS_PER_BLOCK: usize = 1024;
+/// How often a node re-announces its mempool, so peers that connect late
+/// (or reconnect) still converge.
+const ANNOUNCE_INTERVAL_SECS: u64 = 3;
 
 /// In-process node owning mempool + state + block store.
 /// No consensus yet — `produce_block` assumes this node is the leader.
@@ -120,38 +124,46 @@ impl Node {
         let mut network = Network::start(&context, &net).await;
         info!(seed, "node network started");
 
-        // Let peer handshakes settle, then announce our pending transactions
-        // once to every connected peer. Stragglers are covered by the relay.
-        context.sleep(Duration::from_secs(3)).await;
-        for tx in self.mempool.pending() {
-            let hash = tx.hash();
-            let wire = serde_json::to_vec(&tx).expect("serialize tx");
-            let peers = network.broadcast(wire).await;
-            info!(seed, %hash, peers, "announced tx");
-        }
+        let announce_interval = Duration::from_secs(ANNOUNCE_INTERVAL_SECS);
+        let mut next_announce = context.current() + announce_interval;
 
-        // Admit transactions received from peers, then flood them onward.
         loop {
-            let bytes = match network.recv().await {
-                Some(b) => b,
-                None => break, // network shut down
-            };
-            let tx: Transaction = match serde_json::from_slice(&bytes) {
-                Ok(tx) => tx,
-                Err(e) => {
-                    info!(seed, error = %e, "undecodable message");
-                    continue;
+            select! {
+                _ = context.sleep_until(next_announce) => {
+                    for tx in self.mempool.pending() {
+                        let wire = serde_json::to_vec(&tx).expect("serialize tx");
+                        network.broadcast(wire).await;
+                    }
+                    next_announce = context.current() + announce_interval;
                 }
-            };
-            let hash = tx.hash();
-            match self.mempool.insert(tx) {
-                Ok(_) => {
-                    info!(seed, %hash, pending = self.mempool.len(), "admitted peer tx");
-                    // Relay onward. Peers that already hold the tx reject the
-                    // duplicate and stop relaying, so the flood dies out.
-                    network.broadcast(bytes).await;
+
+                received = network.recv() => {
+                    let bytes = match received {
+                        Some(b) => b,
+                        None => break, // network shut down
+                    };
+                    match serde_json::from_slice::<Transaction>(&bytes) {
+                        Ok(tx) => {
+                            let hash = tx.hash();
+                            match self.mempool.insert(tx) {
+                                Ok(_) => {
+                                    info!(
+                                        seed,
+                                        %hash,
+                                        pending = self.mempool.len(),
+                                        "admitted peer tx",
+                                    );
+
+                                    network.broadcast(bytes).await;
+                                }
+                                Err(e) => {
+                                    info!(seed, %hash, error = %e, "dropped peer tx")
+                                }
+                            }
+                        }
+                        Err(e) => info!(seed, error = %e, "undecodable message"),
+                    }
                 }
-                Err(e) => info!(seed, %hash, error = %e, "dropped peer tx"),
             }
         }
     }
