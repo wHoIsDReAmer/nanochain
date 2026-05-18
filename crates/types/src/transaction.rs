@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Ed25519 signature size in bytes.
 pub const SIGNATURE_LEN: usize = 64;
 
-/// Sender address for coinbase (mint) transactions — all-zero, no key exists.
-pub const COINBASE_SENDER: [u8; 32] = [0u8; 32];
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     /// Sender's Ed25519 public key, doubles as their address.
@@ -84,21 +81,6 @@ impl Transaction {
 
     pub fn hash(&self) -> Hash {
         Hash::digest(&self.to_bytes())
-    }
-
-    /// Mint `amount` to `to`. `nonce` only keeps sibling coinbase tx hash-distinct.
-    pub fn coinbase(to: [u8; 32], amount: u64, nonce: u64) -> Self {
-        Transaction {
-            from: COINBASE_SENDER,
-            to,
-            amount,
-            nonce,
-            signature: None,
-        }
-    }
-
-    pub fn is_coinbase(&self) -> bool {
-        self.from == COINBASE_SENDER
     }
 
     /// Build and sign in one step; `from` is set to `signer`'s public key.

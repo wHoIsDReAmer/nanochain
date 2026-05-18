@@ -39,6 +39,8 @@ pub fn build_block(
     let parent_hash = params.parent.hash();
     let proposer_pub = params.proposer.verifying_key().to_bytes();
 
+    // Block body holds only user transactions; the proposer's reward is paid
+    // out by `StateStore::apply_block` as a side-effect, not as a tx here.
     let block = Block::new(
         height,
         parent_hash,
@@ -100,8 +102,8 @@ mod tests {
         let mut state = StateStore::new();
         state.credit(addr(&alice), 100);
 
-        let tx = Transaction::signed(&alice, bob, 30, 0);
-        pool.insert(tx.clone()).unwrap();
+        pool.insert(Transaction::signed(&alice, bob, 30, 0))
+            .unwrap();
 
         let sb = build_block(params(&genesis(), &proposer, 100), &pool, &state).unwrap();
         assert_eq!(sb.block.transactions.len(), 1);
@@ -193,7 +195,7 @@ mod tests {
 
     #[test]
     fn produced_block_applies_cleanly_against_state() {
-        // End-to-end: build a block, then apply it to a fresh state clone.
+        // End-to-end: build a block, then apply it back to the same state.
         let proposer = keypair();
         let alice = keypair();
         let bob = [9u8; 32];
@@ -209,7 +211,6 @@ mod tests {
 
         let sb = build_block(params(&genesis(), &proposer, 100), &pool, &state).unwrap();
 
-        // Replay on the original state — must succeed.
         state.apply_block(&sb.block).unwrap();
         assert_eq!(state.get_balance(&addr(&alice)), 50);
         assert_eq!(state.get_balance(&bob), 50);

@@ -18,16 +18,16 @@ pub struct Node {
 }
 
 impl Node {
-    /// Build the genesis block, apply it to fresh state, and store it.
+    /// Credit genesis allocations directly into state, store the (empty)
+    /// genesis block, and remember the proposer key.
     pub fn bootstrap(genesis: GenesisConfig, signer: SigningKey) -> Self {
         let mut state = StateStore::new();
-        let mut blocks = BlockStore::new();
+        for (addr, balance) in &genesis.allocations {
+            state.credit(*addr, *balance);
+        }
 
-        let genesis_block = genesis.into_block();
-        state
-            .apply_block(&genesis_block)
-            .expect("genesis allocations must apply cleanly");
-        blocks.insert(genesis_block);
+        let mut blocks = BlockStore::new();
+        blocks.insert(Block::genesis());
 
         Self {
             state,

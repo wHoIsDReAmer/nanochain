@@ -28,9 +28,6 @@ impl Mempool {
 
     /// Validate and insert. See `Error` variants for rejection reasons.
     pub fn insert(&mut self, tx: Transaction) -> Result<Hash, Error> {
-        if tx.is_coinbase() {
-            return Err(Error::CoinbaseNotAllowed);
-        }
         tx.verify_signature()?;
 
         if tx.amount == 0 {
