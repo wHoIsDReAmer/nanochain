@@ -55,7 +55,6 @@ fn main() {
     });
 }
 
-/// Parse `--seed <N>` from the command line.
 fn parse_seed() -> u64 {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

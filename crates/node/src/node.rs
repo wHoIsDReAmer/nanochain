@@ -6,7 +6,7 @@ use nanochain_storage::{BlockStore, StateStore};
 use nanochain_types::{Block, Hash, Transaction};
 use std::time::Duration;
 use tokio::select;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::{error::Error, genesis::GenesisConfig};
 
@@ -138,31 +138,28 @@ impl Node {
                 }
 
                 received = network.recv() => {
-                    let bytes = match received {
-                        Some(b) => b,
-                        None => break, // network shut down
+                    let Some(bytes) = received else {
+                        break; // network shut down
                     };
-                    match serde_json::from_slice::<Transaction>(&bytes) {
-                        Ok(tx) => {
-                            let hash = tx.hash();
-                            match self.mempool.insert(tx) {
-                                Ok(_) => {
-                                    info!(
-                                        seed,
-                                        %hash,
-                                        pending = self.mempool.len(),
-                                        "admitted peer tx",
-                                    );
-
-                                    network.broadcast(bytes).await;
-                                }
-                                Err(e) => {
-                                    info!(seed, %hash, error = %e, "dropped peer tx")
-                                }
-                            }
+                    let tx: Transaction = match serde_json::from_slice(&bytes) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            warn!(seed, error = %e, "undecodable message");
+                            continue;
                         }
-                        Err(e) => info!(seed, error = %e, "undecodable message"),
+                    };
+                    let hash = tx.hash();
+                    if let Err(e) = self.mempool.insert(tx) {
+                        match e {
+                            nanochain_mempool::Error::Duplicate => {
+                                debug!(seed, %hash, "ignored duplicate tx")
+                            }
+                            other => warn!(seed, %hash, error = %other, "rejected peer tx"),
+                        }
+                        continue;
                     }
+                    info!(seed, %hash, pending = self.mempool.len(), "admitted peer tx");
+                    network.broadcast(bytes).await;
                 }
             }
         }
