@@ -101,7 +101,7 @@ impl StateStore {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use nanochain_types::{Block, Hash};
+    use nanochain_types::{zero_hash, Block};
     use rand_core::OsRng;
 
     fn keypair() -> SigningKey {
@@ -113,7 +113,7 @@ mod tests {
     }
 
     fn block_with(txs: Vec<Transaction>) -> Block {
-        Block::new(1, Hash::zero(), 0, [0u8; 32], txs)
+        Block::new(1, zero_hash(), 0, [0u8; 32], txs)
     }
 
     #[test]

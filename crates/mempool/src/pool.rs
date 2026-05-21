@@ -52,8 +52,8 @@ impl Mempool {
         self.by_sender
             .entry(tx.from)
             .or_default()
-            .insert(tx.nonce, hash.clone());
-        self.txs.insert(hash.clone(), tx);
+            .insert(tx.nonce, hash);
+        self.txs.insert(hash, tx);
         Ok(hash)
     }
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn remove_missing_returns_none() {
         let mut pool = Mempool::new();
-        let bogus = Hash::zero();
+        let bogus = nanochain_types::zero_hash();
         assert!(pool.remove(&bogus).is_none());
     }
 }

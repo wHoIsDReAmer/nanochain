@@ -6,6 +6,6 @@ pub mod transaction;
 
 pub use block::Block;
 pub use error::Error;
-pub use hash::Hash;
+pub use hash::{sha256, zero as zero_hash, Hash};
 pub use signed_block::SignedBlock;
 pub use transaction::Transaction;

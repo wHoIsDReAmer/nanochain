@@ -2,7 +2,6 @@ use crate::{Block, Error};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// A block with its proposer's Ed25519 signature over `block.hash()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedBlock {
     pub block: Block,
@@ -11,7 +10,6 @@ pub struct SignedBlock {
 }
 
 impl SignedBlock {
-    /// Sign with `signer`; `block.header.proposer` must match `signer`'s public key.
     pub fn sign(block: Block, signer: &SigningKey) -> Result<Self, Error> {
         let signer_pub = signer.verifying_key().to_bytes();
         if block.header.proposer != signer_pub {
@@ -26,7 +24,6 @@ impl SignedBlock {
         })
     }
 
-    /// Verify the Ed25519 signature against `block.header.proposer`.
     pub fn verify(&self) -> Result<(), Error> {
         let pubkey = VerifyingKey::from_bytes(&self.block.header.proposer)
             .map_err(|e| Error::InvalidBlock(format!("bad proposer key: {e}")))?;
@@ -41,8 +38,7 @@ impl SignedBlock {
     }
 }
 
-/// Bridges `[u8; 64]` through `Vec<u8>`: serde lacks built-in Deserialize
-/// for arrays past 32 elements. Length checked on read.
+/// serde has no built-in Deserialize for arrays past 32 elements.
 mod sig_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -67,7 +63,7 @@ mod sig_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Hash;
+    use crate::hash::zero;
     use rand_core::OsRng;
 
     fn keypair() -> SigningKey {
@@ -75,13 +71,7 @@ mod tests {
     }
 
     fn block_for(signer: &SigningKey) -> Block {
-        Block::new(
-            1,
-            Hash::zero(),
-            0,
-            signer.verifying_key().to_bytes(),
-            vec![],
-        )
+        Block::new(1, zero(), 0, signer.verifying_key().to_bytes(), vec![])
     }
 
     #[test]

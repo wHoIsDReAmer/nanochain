@@ -1,18 +1,19 @@
+use crate::hash::{hash_serde, sha256, zero};
 use crate::{Hash, Transaction};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
     pub height: u64,
+    #[serde(with = "hash_serde")]
     pub parent_hash: Hash,
+    #[serde(with = "hash_serde")]
     pub tx_root: Hash,
     pub timestamp: u64,
     pub proposer: [u8; 32],
 }
 
 impl BlockHeader {
-    /// 112-byte deterministic encoding (LE for integers).
-    /// TODO: swap for commonware-utils.
     pub fn to_bytes(&self) -> [u8; 112] {
         let mut buf = [0u8; 112];
         buf[0..8].copy_from_slice(&self.height.to_le_bytes());
@@ -31,17 +32,16 @@ pub struct Block {
 }
 
 impl Block {
-    /// Compute the Merkle root of a transaction list.
     pub fn compute_tx_root(txs: &[Transaction]) -> Hash {
         if txs.is_empty() {
-            return Hash::zero();
+            return zero();
         }
 
         let mut layer: Vec<Hash> = txs.iter().map(|tx| tx.hash()).collect();
 
         while layer.len() > 1 {
             if layer.len() % 2 == 1 {
-                layer.push(layer.last().unwrap().clone());
+                layer.push(*layer.last().unwrap());
             }
             layer = layer
                 .chunks(2)
@@ -49,7 +49,7 @@ impl Block {
                     let mut buf = [0u8; 64];
                     buf[..32].copy_from_slice(&pair[0].0);
                     buf[32..].copy_from_slice(&pair[1].0);
-                    Hash::digest(&buf)
+                    sha256(&buf)
                 })
                 .collect();
         }
@@ -58,15 +58,15 @@ impl Block {
     }
 
     pub fn hash(&self) -> Hash {
-        Hash::digest(&self.header.to_bytes())
+        sha256(&self.header.to_bytes())
     }
 
     pub fn genesis() -> Self {
         Block {
             header: BlockHeader {
                 height: 0,
-                parent_hash: Hash::zero(),
-                tx_root: Hash::zero(),
+                parent_hash: zero(),
+                tx_root: zero(),
                 timestamp: 0,
                 proposer: [0u8; 32],
             },
@@ -74,7 +74,6 @@ impl Block {
         }
     }
 
-    /// Block builder. `tx_root` is computed automatically from `transactions`.
     pub fn new(
         height: u64,
         parent_hash: Hash,
@@ -112,7 +111,7 @@ mod tests {
 
     #[test]
     fn empty_root_is_zero() {
-        assert_eq!(Block::compute_tx_root(&[]), Hash::zero());
+        assert_eq!(Block::compute_tx_root(&[]), zero());
     }
 
     #[test]
@@ -142,8 +141,8 @@ mod tests {
 
     #[test]
     fn block_hash_reacts_to_tx_change() {
-        let b1 = Block::new(1, Hash::zero(), 0, [0u8; 32], vec![tx(10, 0)]);
-        let b2 = Block::new(1, Hash::zero(), 0, [0u8; 32], vec![tx(99, 0)]);
+        let b1 = Block::new(1, zero(), 0, [0u8; 32], vec![tx(10, 0)]);
+        let b2 = Block::new(1, zero(), 0, [0u8; 32], vec![tx(99, 0)]);
         assert_ne!(b1.hash(), b2.hash());
     }
 

@@ -1,25 +1,22 @@
+use crate::hash::sha256;
 use crate::{Error, Hash};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// Ed25519 signature size in bytes.
 pub const SIGNATURE_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
-    /// Sender's Ed25519 public key, doubles as their address.
+    /// Ed25519 pubkey doubles as address.
     pub from: [u8; 32],
-    /// Recipient's public key / address.
     pub to: [u8; 32],
     pub amount: u64,
     pub nonce: u64,
-    /// Ed25519 signature over `pure_payload()`; `None` if unsigned.
     #[serde(with = "option_sig_bytes")]
     pub signature: Option<[u8; SIGNATURE_LEN]>,
 }
 
-/// Bridges `Option<[u8; 64]>` through `Option<Vec<u8>>` because serde lacks
-/// built-in Deserialize for arrays past 32 elements. Length checked on read.
+/// serde has no built-in Deserialize for arrays past 32 elements.
 mod option_sig_bytes {
     use super::SIGNATURE_LEN;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -52,7 +49,7 @@ mod option_sig_bytes {
 }
 
 impl Transaction {
-    /// Bytes that the sender signs over. Includes every field except `signature`.
+    /// Signed bytes; excludes `signature` itself.
     pub fn pure_payload(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(32 + 32 + 8 + 8);
         buf.extend_from_slice(&self.from);
@@ -62,8 +59,6 @@ impl Transaction {
         buf
     }
 
-    /// Deterministic encoding; `signature` is length-prefixed for safe parsing.
-    /// TODO: swap for commonware-utils.
     pub fn to_bytes(&self) -> Vec<u8> {
         let sig_len = self.signature.as_ref().map_or(0, |s| s.len());
         let mut buf = Vec::with_capacity(32 + 32 + 8 + 8 + 8 + sig_len);
@@ -79,10 +74,9 @@ impl Transaction {
     }
 
     pub fn hash(&self) -> Hash {
-        Hash::digest(&self.to_bytes())
+        sha256(&self.to_bytes())
     }
 
-    /// Build and sign in one step; `from` is set to `signer`'s public key.
     pub fn signed(signer: &SigningKey, to: [u8; 32], amount: u64, nonce: u64) -> Self {
         let from = signer.verifying_key().to_bytes();
         let mut tx = Transaction {
@@ -97,7 +91,6 @@ impl Transaction {
         tx
     }
 
-    /// Verify the Ed25519 signature against `from`'s public key.
     pub fn verify_signature(&self) -> Result<(), Error> {
         let sig_bytes = self
             .signature

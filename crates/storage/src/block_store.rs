@@ -16,7 +16,7 @@ impl BlockStore {
 
     pub fn insert(&mut self, block: Block) {
         let hash = block.hash();
-        self.height_index.insert(block.header.height, hash.clone());
+        self.height_index.insert(block.header.height, hash);
         self.blocks.insert(hash, block);
     }
 
