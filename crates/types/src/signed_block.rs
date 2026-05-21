@@ -1,4 +1,6 @@
 use crate::{Block, Error};
+use bytes::{Buf, BufMut};
+use commonware_codec::{EncodeSize, Error as CodecError, Read, ReadExt as _, Write};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +37,29 @@ impl SignedBlock {
 
     pub fn proposer(&self) -> [u8; 32] {
         self.block.header.proposer
+    }
+}
+
+impl Write for SignedBlock {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.block.write(buf);
+        self.signature.write(buf);
+    }
+}
+
+impl Read for SignedBlock {
+    type Cfg = ();
+    fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
+        Ok(Self {
+            block: Block::read(buf)?,
+            signature: <[u8; 64]>::read(buf)?,
+        })
+    }
+}
+
+impl EncodeSize for SignedBlock {
+    fn encode_size(&self) -> usize {
+        self.block.encode_size() + self.signature.encode_size()
     }
 }
 
@@ -85,7 +110,7 @@ mod tests {
     fn proposer_mismatch_refuses_to_sign() {
         let key = keypair();
         let mut block = block_for(&key);
-        block.header.proposer = [0xff; 32]; // forge proposer
+        block.header.proposer = [0xff; 32];
         let err = SignedBlock::sign(block, &key).unwrap_err();
         assert!(matches!(err, Error::InvalidBlock(_)));
     }
@@ -113,5 +138,17 @@ mod tests {
         let mut sb = SignedBlock::sign(block_for(&key), &key).unwrap();
         sb.signature = [0xff; 64];
         assert!(sb.verify().is_err());
+    }
+
+    #[test]
+    fn codec_roundtrip() {
+        use commonware_codec::{DecodeExt as _, Encode as _};
+        let key = keypair();
+        let sb = SignedBlock::sign(block_for(&key), &key).unwrap();
+        let encoded = sb.encode();
+        let decoded = SignedBlock::decode(encoded).expect("decode");
+        assert_eq!(sb.block.hash(), decoded.block.hash());
+        assert_eq!(sb.signature, decoded.signature);
+        assert!(decoded.verify().is_ok());
     }
 }

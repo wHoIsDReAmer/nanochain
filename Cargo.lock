@@ -1724,6 +1724,7 @@ name = "nanochain-types"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "commonware-codec",
  "commonware-cryptography",
  "ed25519-dalek",
  "rand_core 0.6.4",

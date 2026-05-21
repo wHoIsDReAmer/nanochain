@@ -1,5 +1,7 @@
 use crate::hash::sha256;
 use crate::{Error, Hash};
+use bytes::{Buf, BufMut};
+use commonware_codec::{EncodeSize, Error as CodecError, Read, ReadExt as _, Write};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -59,22 +61,8 @@ impl Transaction {
         buf
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let sig_len = self.signature.as_ref().map_or(0, |s| s.len());
-        let mut buf = Vec::with_capacity(32 + 32 + 8 + 8 + 8 + sig_len);
-        buf.extend_from_slice(&self.from);
-        buf.extend_from_slice(&self.to);
-        buf.extend_from_slice(&self.amount.to_le_bytes());
-        buf.extend_from_slice(&self.nonce.to_le_bytes());
-        buf.extend_from_slice(&(sig_len as u64).to_le_bytes());
-        if let Some(sig) = &self.signature {
-            buf.extend_from_slice(sig);
-        }
-        buf
-    }
-
     pub fn hash(&self) -> Hash {
-        sha256(&self.to_bytes())
+        sha256(&commonware_codec::Encode::encode(self))
     }
 
     pub fn signed(signer: &SigningKey, to: [u8; 32], amount: u64, nonce: u64) -> Self {
@@ -105,6 +93,39 @@ impl Transaction {
     }
 }
 
+impl Write for Transaction {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.from.write(buf);
+        self.to.write(buf);
+        self.amount.write(buf);
+        self.nonce.write(buf);
+        self.signature.write(buf);
+    }
+}
+
+impl Read for Transaction {
+    type Cfg = ();
+    fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
+        Ok(Self {
+            from: <[u8; 32]>::read(buf)?,
+            to: <[u8; 32]>::read(buf)?,
+            amount: u64::read(buf)?,
+            nonce: u64::read(buf)?,
+            signature: <Option<[u8; SIGNATURE_LEN]>>::read(buf)?,
+        })
+    }
+}
+
+impl EncodeSize for Transaction {
+    fn encode_size(&self) -> usize {
+        self.from.encode_size()
+            + self.to.encode_size()
+            + self.amount.encode_size()
+            + self.nonce.encode_size()
+            + self.signature.encode_size()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +146,7 @@ mod tests {
     fn tampering_after_sign_fails_verify() {
         let key = keypair();
         let mut tx = Transaction::signed(&key, [9u8; 32], 100, 0);
-        tx.amount = 999_999; // tamper post-sign
+        tx.amount = 999_999;
         assert!(tx.verify_signature().is_err());
     }
 
@@ -134,7 +155,7 @@ mod tests {
         let victim = keypair();
         let attacker = keypair();
         let mut tx = Transaction::signed(&attacker, [9u8; 32], 100, 0);
-        tx.from = victim.verifying_key().to_bytes(); // claim a different sender
+        tx.from = victim.verifying_key().to_bytes();
         assert!(tx.verify_signature().is_err());
     }
 
@@ -167,7 +188,20 @@ mod tests {
         let key = keypair();
         let tx1 = Transaction::signed(&key, [9u8; 32], 100, 0);
         let mut tx2 = tx1.clone();
-        tx2.signature = Some([0xff; SIGNATURE_LEN]); // different sig, same fields
+        tx2.signature = Some([0xff; SIGNATURE_LEN]);
         assert_eq!(tx1.pure_payload(), tx2.pure_payload());
+    }
+
+    #[test]
+    fn codec_roundtrip() {
+        use commonware_codec::{DecodeExt as _, Encode as _};
+        let tx = Transaction::signed(&keypair(), [9u8; 32], 100, 0);
+        let encoded = tx.encode();
+        let decoded = Transaction::decode(encoded).expect("decode");
+        assert_eq!(tx.from, decoded.from);
+        assert_eq!(tx.to, decoded.to);
+        assert_eq!(tx.amount, decoded.amount);
+        assert_eq!(tx.nonce, decoded.nonce);
+        assert_eq!(tx.signature, decoded.signature);
     }
 }

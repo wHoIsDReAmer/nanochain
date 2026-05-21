@@ -15,6 +15,7 @@ edition = "2021"
 
 [workspace.dependencies]
 # commonware
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo" }

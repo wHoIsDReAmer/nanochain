@@ -1,6 +1,13 @@
 use crate::hash::{hash_serde, sha256, zero};
 use crate::{Hash, Transaction};
+use bytes::{Buf, BufMut};
+use commonware_codec::{
+    Encode, EncodeSize, Error as CodecError, FixedSize, RangeCfg, Read, ReadExt as _, Write,
+};
 use serde::{Deserialize, Serialize};
+
+/// Hard ceiling on tx-per-block applied when decoding from the network; DoS guard.
+const MAX_TXS_PER_BLOCK: usize = 16_384;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
@@ -11,18 +18,6 @@ pub struct BlockHeader {
     pub tx_root: Hash,
     pub timestamp: u64,
     pub proposer: [u8; 32],
-}
-
-impl BlockHeader {
-    pub fn to_bytes(&self) -> [u8; 112] {
-        let mut buf = [0u8; 112];
-        buf[0..8].copy_from_slice(&self.height.to_le_bytes());
-        buf[8..40].copy_from_slice(&self.parent_hash.0);
-        buf[40..72].copy_from_slice(&self.tx_root.0);
-        buf[72..80].copy_from_slice(&self.timestamp.to_le_bytes());
-        buf[80..112].copy_from_slice(&self.proposer);
-        buf
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +53,7 @@ impl Block {
     }
 
     pub fn hash(&self) -> Hash {
-        sha256(&self.header.to_bytes())
+        sha256(&self.header.encode())
     }
 
     pub fn genesis() -> Self {
@@ -92,6 +87,59 @@ impl Block {
             },
             transactions,
         }
+    }
+}
+
+impl Write for BlockHeader {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.height.write(buf);
+        self.parent_hash.write(buf);
+        self.tx_root.write(buf);
+        self.timestamp.write(buf);
+        self.proposer.write(buf);
+    }
+}
+
+impl Read for BlockHeader {
+    type Cfg = ();
+    fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
+        Ok(Self {
+            height: u64::read(buf)?,
+            parent_hash: Hash::read(buf)?,
+            tx_root: Hash::read(buf)?,
+            timestamp: u64::read(buf)?,
+            proposer: <[u8; 32]>::read(buf)?,
+        })
+    }
+}
+
+impl FixedSize for BlockHeader {
+    const SIZE: usize = 8 + 32 + 32 + 8 + 32;
+}
+
+impl Write for Block {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.header.write(buf);
+        self.transactions.write(buf);
+    }
+}
+
+impl Read for Block {
+    type Cfg = ();
+    fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
+        let header = BlockHeader::read(buf)?;
+        let cfg: (RangeCfg<usize>, ()) = ((..=MAX_TXS_PER_BLOCK).into(), ());
+        let transactions = Vec::<Transaction>::read_cfg(buf, &cfg)?;
+        Ok(Self {
+            header,
+            transactions,
+        })
+    }
+}
+
+impl EncodeSize for Block {
+    fn encode_size(&self) -> usize {
+        self.header.encode_size() + self.transactions.encode_size()
     }
 }
 
@@ -150,5 +198,25 @@ mod tests {
     fn odd_layer_handled() {
         let txs = vec![tx(1, 0), tx(2, 1), tx(3, 2)];
         let _ = Block::compute_tx_root(&txs);
+    }
+
+    #[test]
+    fn block_codec_roundtrip() {
+        use commonware_codec::{DecodeExt as _, Encode as _};
+        let b = Block::new(7, zero(), 42, [3u8; 32], vec![tx(10, 0), tx(20, 1)]);
+        let encoded = b.encode();
+        let decoded = Block::decode(encoded).expect("decode");
+        assert_eq!(b.header.height, decoded.header.height);
+        assert_eq!(b.header.parent_hash, decoded.header.parent_hash);
+        assert_eq!(b.header.tx_root, decoded.header.tx_root);
+        assert_eq!(b.header.timestamp, decoded.header.timestamp);
+        assert_eq!(b.header.proposer, decoded.header.proposer);
+        assert_eq!(b.transactions.len(), decoded.transactions.len());
+        assert_eq!(b.hash(), decoded.hash());
+    }
+
+    #[test]
+    fn header_is_fixed_112_bytes() {
+        assert_eq!(BlockHeader::SIZE, 112);
     }
 }
