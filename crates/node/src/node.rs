@@ -1,3 +1,5 @@
+use commonware_runtime::Quota;
+use commonware_utils::NZU32;
 use ed25519_dalek::SigningKey;
 use nanochain_consensus::{build_block, BuildParams};
 use nanochain_mempool::Mempool;
@@ -121,7 +123,9 @@ impl Node {
             + rand_core::CryptoRngCore,
     {
         let seed = net.seed;
-        let mut network = Network::start(&context, &net).await;
+        let mut network = Network::new(&context, &net).await;
+        let mut tx_channel = network.register(0, Quota::per_second(NZU32!(64)), 256);
+        let _net_task = network.start();
         info!(seed, "node network started");
 
         let announce_interval = Duration::from_secs(ANNOUNCE_INTERVAL_SECS);
@@ -132,12 +136,12 @@ impl Node {
                 _ = context.sleep_until(next_announce) => {
                     for tx in self.mempool.pending() {
                         let wire = serde_json::to_vec(&tx).expect("serialize tx");
-                        network.broadcast(wire).await;
+                        tx_channel.broadcast(wire).await;
                     }
                     next_announce = context.current() + announce_interval;
                 }
 
-                received = network.recv() => {
+                received = tx_channel.recv() => {
                     let Some(bytes) = received else {
                         break; // network shut down
                     };
@@ -159,7 +163,7 @@ impl Node {
                         continue;
                     }
                     info!(seed, %hash, pending = self.mempool.len(), "admitted peer tx");
-                    network.broadcast(bytes).await;
+                    tx_channel.broadcast(bytes).await;
                 }
             }
         }

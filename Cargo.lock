@@ -1695,6 +1695,7 @@ name = "nanochain-node"
 version = "0.1.0"
 dependencies = [
  "commonware-runtime",
+ "commonware-utils",
  "ed25519-dalek",
  "nanochain-consensus",
  "nanochain-mempool",
