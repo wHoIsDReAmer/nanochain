@@ -4,6 +4,8 @@ use bytes::{Buf, BufMut};
 use commonware_codec::{
     Encode, EncodeSize, Error as CodecError, FixedSize, RangeCfg, Read, ReadExt as _, Write,
 };
+use commonware_consensus::{types::Height, Block as ConsensusBlock, Heightable};
+use commonware_cryptography::Digestible;
 use serde::{Deserialize, Serialize};
 
 /// Hard ceiling on tx-per-block applied when decoding from the network; DoS guard.
@@ -142,6 +144,31 @@ impl EncodeSize for Block {
         self.header.encode_size() + self.transactions.encode_size()
     }
 }
+
+impl Digestible for Block {
+    type Digest = Hash;
+    fn digest(&self) -> Hash {
+        self.hash()
+    }
+}
+
+impl Heightable for Block {
+    fn height(&self) -> Height {
+        Height::new(self.header.height)
+    }
+}
+
+impl ConsensusBlock for Block {
+    fn parent(&self) -> Hash {
+        self.header.parent_hash
+    }
+}
+
+/// Compile-time assertion that `Block` satisfies commonware's consensus `Block`.
+const _: fn() = || {
+    fn assert_block<B: ConsensusBlock>() {}
+    assert_block::<Block>();
+};
 
 #[cfg(test)]
 mod tests {
