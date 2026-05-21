@@ -1648,9 +1648,12 @@ dependencies = [
 name = "nanochain-consensus"
 version = "0.1.0"
 dependencies = [
+ "commonware-actor",
+ "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-runtime",
+ "commonware-utils",
  "ed25519-dalek",
  "nanochain-mempool",
  "nanochain-storage",
