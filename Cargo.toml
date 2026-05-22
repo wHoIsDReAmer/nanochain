@@ -20,6 +20,7 @@ commonware-codec = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo" }
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo" }

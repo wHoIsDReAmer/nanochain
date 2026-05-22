@@ -1,3 +1,4 @@
+pub mod consensus;
 pub mod error;
 pub mod genesis;
 pub mod node;

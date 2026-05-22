@@ -1694,6 +1694,10 @@ dependencies = [
 name = "nanochain-node"
 version = "0.1.0"
 dependencies = [
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-p2p",
+ "commonware-parallel",
  "commonware-runtime",
  "commonware-utils",
  "ed25519-dalek",

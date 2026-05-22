@@ -46,9 +46,7 @@ impl<R: Spawner> Application<R> {
     ) -> (Self, Mailbox, Reporter) {
         let (sender, receiver) = mailbox::new::<Message>(config.mailbox_size);
         let m = Mailbox::new(sender);
-        let r = Reporter {
-            mailbox: m.clone(),
-        };
+        let r = Reporter { mailbox: m.clone() };
         let genesis_digest = config.genesis.hash();
         let app = Self {
             context: ContextCell::new(context),
@@ -230,13 +228,8 @@ mod tests {
                 signer: keypair(),
                 genesis: Block::genesis(),
             };
-            let (app, _mailbox, _reporter) = Application::new(
-                ctx,
-                StateStore::new(),
-                blocks,
-                Mempool::new(),
-                cfg,
-            );
+            let (app, _mailbox, _reporter) =
+                Application::new(ctx, StateStore::new(), blocks, Mempool::new(), cfg);
 
             assert!(!app.verify(nanochain_types::zero_hash()));
         });
@@ -254,13 +247,8 @@ mod tests {
                 signer: keypair(),
                 genesis: Block::genesis(),
             };
-            let (mut app, _mailbox, _reporter) = Application::new(
-                ctx,
-                StateStore::new(),
-                blocks,
-                Mempool::new(),
-                cfg,
-            );
+            let (mut app, _mailbox, _reporter) =
+                Application::new(ctx, StateStore::new(), blocks, Mempool::new(), cfg);
 
             assert!(app.finalize(nanochain_types::zero_hash()).is_err());
         });
