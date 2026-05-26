@@ -24,6 +24,12 @@ pub enum Message {
     Finalize {
         digest: Hash,
     },
+    Broadcast {
+        digest: Hash,
+    },
+    StoreBlock {
+        bytes: Vec<u8>,
+    },
 }
 
 impl Policy for Message {
@@ -43,6 +49,10 @@ pub struct Mailbox {
 impl Mailbox {
     pub(super) const fn new(sender: Sender<Message>) -> Self {
         Self { sender }
+    }
+
+    pub fn store_peer_block(&self, bytes: Vec<u8>) {
+        let _ = self.sender.enqueue(Message::StoreBlock { bytes });
     }
 }
 
@@ -95,7 +105,7 @@ impl Relay for Mailbox {
     type PublicKey = PublicKey;
     type Plan = Plan<PublicKey>;
 
-    async fn broadcast(&mut self, _digest: Hash, _plan: Plan<PublicKey>) {
-        // Block bytes travel on a dedicated p2p channel, wired in Stage 5.
+    async fn broadcast(&mut self, digest: Hash, _plan: Plan<PublicKey>) {
+        let _ = self.sender.enqueue(Message::Broadcast { digest });
     }
 }

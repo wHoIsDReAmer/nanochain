@@ -2,8 +2,10 @@ use super::ingress::{Mailbox, Message};
 use super::Reporter;
 use crate::{build_block, BuildParams, Error};
 use commonware_actor::mailbox::{self, Receiver};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::Epoch;
 use commonware_runtime::{spawn_cell, ContextCell, Handle, Spawner};
+use commonware_utils::channel::mpsc;
 use ed25519_dalek::SigningKey;
 use nanochain_mempool::Mempool;
 use nanochain_storage::{BlockStore, StateStore};
@@ -13,6 +15,8 @@ use std::num::NonZeroUsize;
 use tracing::{info, warn};
 
 const MAX_TXS_PER_BLOCK: usize = 1024;
+/// Backlog of serialized blocks awaiting broadcast by the node.
+const BLOCKS_OUT_CAPACITY: usize = 256;
 
 pub struct Config {
     pub mailbox_size: NonZeroUsize,
@@ -34,6 +38,8 @@ pub struct Application<R: Spawner> {
     /// Drained on finalize.
     pending: HashMap<Hash, Block>,
     genesis_digest: Hash,
+    /// Serialized blocks the node should broadcast to peers.
+    blocks_out: mpsc::Sender<Vec<u8>>,
 }
 
 impl<R: Spawner> Application<R> {
@@ -43,8 +49,9 @@ impl<R: Spawner> Application<R> {
         blocks: BlockStore,
         mempool: Mempool,
         config: Config,
-    ) -> (Self, Mailbox, Reporter) {
+    ) -> (Self, Mailbox, Reporter, mpsc::Receiver<Vec<u8>>) {
         let (sender, receiver) = mailbox::new::<Message>(config.mailbox_size);
+        let (blocks_out, blocks_out_rx) = mpsc::channel(BLOCKS_OUT_CAPACITY);
         let m = Mailbox::new(sender);
         let r = Reporter { mailbox: m.clone() };
         let genesis_digest = config.genesis.hash();
@@ -57,8 +64,9 @@ impl<R: Spawner> Application<R> {
             mempool,
             pending: HashMap::new(),
             genesis_digest,
+            blocks_out,
         };
-        (app, m, r)
+        (app, m, r, blocks_out_rx)
     }
 
     pub fn start(mut self) -> Handle<()> {
@@ -86,7 +94,31 @@ impl<R: Spawner> Application<R> {
                         warn!(%digest, error = %e, "finalize failed");
                     }
                 }
+                Message::Broadcast { digest } => self.broadcast_block(digest),
+                Message::StoreBlock { bytes } => self.store_block(bytes),
             }
+        }
+    }
+
+    /// Push the block behind `digest` onto the outbound queue for the node to
+    /// broadcast. Best-effort: dropped if unknown locally or the queue is full.
+    fn broadcast_block(&mut self, digest: Hash) {
+        let Some(block) = self.pending.get(&digest) else {
+            warn!(%digest, "broadcast miss: block unknown locally");
+            return;
+        };
+        if self.blocks_out.try_send(block.encode().to_vec()).is_err() {
+            warn!(%digest, "block broadcast queue full");
+        }
+    }
+
+    /// Decode a peer's block bytes and stash it so we can verify/finalize it.
+    fn store_block(&mut self, bytes: Vec<u8>) {
+        match Block::decode(bytes.as_ref()) {
+            Ok(block) => {
+                self.pending.insert(block.hash(), block);
+            }
+            Err(e) => warn!(error = %e, "undecodable peer block"),
         }
     }
 
@@ -198,7 +230,8 @@ mod tests {
                 signer: keypair(),
                 genesis: Block::genesis(),
             };
-            let (mut app, _mailbox, _reporter) = Application::new(ctx, state, blocks, pool, cfg);
+            let (mut app, _mailbox, _reporter, _blocks_out) =
+                Application::new(ctx, state, blocks, pool, cfg);
 
             assert_eq!(app.tip_height(), 0);
             assert_eq!(app.balance(&addr(&alice)), 1_000);
@@ -228,7 +261,7 @@ mod tests {
                 signer: keypair(),
                 genesis: Block::genesis(),
             };
-            let (app, _mailbox, _reporter) =
+            let (app, _mailbox, _reporter, _blocks_out) =
                 Application::new(ctx, StateStore::new(), blocks, Mempool::new(), cfg);
 
             assert!(!app.verify(nanochain_types::zero_hash()));
@@ -247,10 +280,46 @@ mod tests {
                 signer: keypair(),
                 genesis: Block::genesis(),
             };
-            let (mut app, _mailbox, _reporter) =
+            let (mut app, _mailbox, _reporter, _blocks_out) =
                 Application::new(ctx, StateStore::new(), blocks, Mempool::new(), cfg);
 
             assert!(app.finalize(nanochain_types::zero_hash()).is_err());
+        });
+    }
+
+    #[test]
+    fn stored_peer_block_becomes_verifiable() {
+        let runner = deterministic::Runner::default();
+        runner.start(|ctx| async move {
+            let alice = keypair();
+            let bob = [9u8; 32];
+
+            let mut state = StateStore::new();
+            state.credit(addr(&alice), 1_000);
+            let mut blocks = BlockStore::new();
+            blocks.insert(Block::genesis());
+
+            let cfg = Config {
+                mailbox_size: NonZeroUsize::new(8).unwrap(),
+                signer: keypair(),
+                genesis: Block::genesis(),
+            };
+            let (mut app, _mailbox, _reporter, _blocks_out) =
+                Application::new(ctx, state, blocks, Mempool::new(), cfg);
+
+            // A peer's block arrives as bytes; before storing, it's unverifiable.
+            let peer_block = Block::new(
+                1,
+                Block::genesis().hash(),
+                0,
+                [7u8; 32],
+                vec![Transaction::signed(&alice, bob, 100, 0)],
+            );
+            let digest = peer_block.hash();
+            assert!(!app.verify(digest));
+
+            app.store_block(peer_block.encode().to_vec());
+            assert!(app.verify(digest), "stored peer block should verify");
         });
     }
 }
