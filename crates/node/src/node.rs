@@ -1,244 +1,134 @@
-use commonware_runtime::Quota;
+use commonware_runtime::{Quota, Storage};
 use commonware_utils::NZU32;
 use ed25519_dalek::SigningKey;
-use nanochain_consensus::{build_block, BuildParams};
+use nanochain_consensus::app::{make_scheme, Application, Config as AppConfig, Tuning};
 use nanochain_mempool::Mempool;
-use nanochain_network::{Network, NetworkConfig};
+use nanochain_network::{Context, Network, NetworkConfig};
 use nanochain_storage::{BlockStore, StateStore};
-use nanochain_types::{Block, Hash, Transaction};
-use std::time::Duration;
-use tokio::select;
-use tracing::{debug, info, warn};
+use nanochain_types::{Block, Transaction};
+use std::num::NonZeroUsize;
+use tracing::{info, warn};
 
-use crate::{error::Error, genesis::GenesisConfig};
+use crate::consensus::{start_engine, Channels};
+use crate::genesis::GenesisConfig;
 
-const MAX_TXS_PER_BLOCK: usize = 1024;
-/// How often a node re-announces its mempool, so peers that connect late
-/// (or reconnect) still converge.
-const ANNOUNCE_INTERVAL_SECS: u64 = 3;
+/// Domain tag binding consensus signatures to this chain.
+const NAMESPACE: &[u8] = b"nanochain-consensus";
+const MAILBOX_SIZE: usize = 1024;
+/// p2p channel ids handed to the consensus engine + block relay.
+const CH_VOTE: u64 = 0;
+const CH_CERTIFICATE: u64 = 1;
+const CH_RESOLVER: u64 = 2;
+const CH_BLOCK: u64 = 3;
 
-/// In-process node owning mempool + state + block store.
-/// No consensus yet — `produce_block` assumes this node is the leader.
+/// A nanochain validator: genesis allocations, the consensus signing key, and
+/// any transactions to seed the mempool with at startup.
 pub struct Node {
-    state: StateStore,
-    blocks: BlockStore,
-    mempool: Mempool,
+    genesis: GenesisConfig,
     signer: SigningKey,
+    initial_txs: Vec<Transaction>,
 }
 
 impl Node {
-    /// Credit genesis allocations directly into state, store the (empty)
-    /// genesis block, and remember the proposer key.
-    pub fn bootstrap(genesis: GenesisConfig, signer: SigningKey) -> Self {
-        let mut state = StateStore::new();
-        for (addr, balance) in &genesis.allocations {
-            state.credit(*addr, *balance);
-        }
-
-        let mut blocks = BlockStore::new();
-        blocks.insert(Block::genesis());
-
+    pub fn new(genesis: GenesisConfig, signer: SigningKey) -> Self {
         Self {
-            state,
-            blocks,
-            mempool: Mempool::new(),
+            genesis,
             signer,
+            initial_txs: Vec::new(),
         }
     }
 
-    /// Admit a tx into the mempool after validation.
-    pub fn submit_tx(&mut self, tx: Transaction) -> Result<Hash, Error> {
-        Ok(self.mempool.insert(tx)?)
+    /// Seed a transaction into the mempool at startup (demo/testing entry point
+    /// until an RPC exists).
+    pub fn queue_tx(&mut self, tx: Transaction) {
+        self.initial_txs.push(tx);
     }
 
-    /// Build → sign → verify → apply → persist one block. Returns its hash.
-    pub fn produce_block(&mut self, timestamp: u64) -> Result<Hash, Error> {
-        let parent = self
-            .blocks
-            .tip()
-            .ok_or(Error::Internal("missing tip"))?
-            .clone();
-
-        let signed = build_block(
-            BuildParams {
-                parent: &parent,
-                timestamp,
-                proposer: &self.signer,
-                max_txs: MAX_TXS_PER_BLOCK,
-            },
-            &self.mempool,
-            &self.state,
-        )?;
-
-        signed.verify()?;
-        self.state.apply_block(&signed.block)?;
-
-        for tx in &signed.block.transactions {
-            self.mempool.remove(&tx.hash());
-        }
-
-        let hash = signed.block.hash();
-        self.blocks.insert(signed.block);
-        Ok(hash)
-    }
-
-    pub fn tip(&self) -> &Block {
-        self.blocks.tip().expect("genesis is always present")
-    }
-
-    pub fn tip_height(&self) -> u64 {
-        self.tip().header.height
-    }
-
-    pub fn tip_hash(&self) -> Hash {
-        self.tip().hash()
-    }
-
-    pub fn balance(&self, account: &[u8; 32]) -> u64 {
-        self.state.get_balance(account)
-    }
-
-    pub fn nonce(&self, account: &[u8; 32]) -> u64 {
-        self.state.get_nonce(account)
-    }
-
-    pub fn pending_tx_count(&self) -> usize {
-        self.mempool.len()
-    }
-
-    pub fn proposer_pubkey(&self) -> [u8; 32] {
-        self.signer.verifying_key().to_bytes()
-    }
-
-    /// Run forever: start the p2p network, announce the local mempool to
-    /// peers, then admit (and relay) every transaction received from peers.
-    pub async fn run<E>(mut self, context: E, net: NetworkConfig)
+    /// Boot the validator: build chain state, wire the Simplex engine to the
+    /// p2p channels, and run consensus until shutdown.
+    pub async fn run<E>(self, context: E, net: NetworkConfig)
     where
-        E: commonware_runtime::Spawner
-            + commonware_runtime::Clock
-            + commonware_runtime::Metrics
-            + commonware_runtime::Network
-            + commonware_runtime::Resolver
-            + commonware_runtime::BufferPooler
-            + rand_core::CryptoRngCore,
+        E: Context + Storage + Send + 'static,
     {
         let seed = net.seed;
-        let mut network = Network::new(&context, &net).await;
-        let mut tx_channel = network.register(0, Quota::per_second(NZU32!(64)), 256);
-        let _net_task = network.start();
-        info!(seed, "node network started");
 
-        let announce_interval = Duration::from_secs(ANNOUNCE_INTERVAL_SECS);
-        let mut next_announce = context.current() + announce_interval;
-
-        loop {
-            select! {
-                _ = context.sleep_until(next_announce) => {
-                    for tx in self.mempool.pending() {
-                        let wire = serde_json::to_vec(&tx).expect("serialize tx");
-                        tx_channel.broadcast(wire).await;
-                    }
-                    next_announce = context.current() + announce_interval;
-                }
-
-                received = tx_channel.recv() => {
-                    let Some(bytes) = received else {
-                        break; // network shut down
-                    };
-                    let tx: Transaction = match serde_json::from_slice(&bytes) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            warn!(seed, error = %e, "undecodable message");
-                            continue;
-                        }
-                    };
-                    let hash = tx.hash();
-                    if let Err(e) = self.mempool.insert(tx) {
-                        match e {
-                            nanochain_mempool::Error::Duplicate => {
-                                debug!(seed, %hash, "ignored duplicate tx")
-                            }
-                            other => warn!(seed, %hash, error = %other, "rejected peer tx"),
-                        }
-                        continue;
-                    }
-                    info!(seed, %hash, pending = self.mempool.len(), "admitted peer tx");
-                    tx_channel.broadcast(bytes).await;
-                }
+        // Genesis state + block.
+        let mut state = StateStore::new();
+        for (addr, balance) in &self.genesis.allocations {
+            state.credit(*addr, *balance);
+        }
+        let mut blocks = BlockStore::new();
+        blocks.insert(Block::genesis());
+        let mut mempool = Mempool::new();
+        for tx in self.initial_txs {
+            if let Err(e) = mempool.insert(tx) {
+                warn!(seed, error = %e, "skipped invalid seed tx");
             }
         }
+
+        // Consensus signing scheme over the validator roster.
+        let roster: Vec<u64> = net.peers.iter().map(|(s, _)| *s).collect();
+        let scheme = make_scheme(NAMESPACE, &roster, seed)
+            .expect("our seed must be in the validator roster");
+
+        // Application owns chain state and answers Simplex's propose/verify.
+        let (app, mailbox, reporter, mut blocks_out) = Application::new(
+            context.child("app"),
+            state,
+            blocks,
+            mempool,
+            AppConfig {
+                mailbox_size: NonZeroUsize::new(MAILBOX_SIZE).unwrap(),
+                signer: self.signer,
+                genesis: Block::genesis(),
+            },
+        );
+
+        // p2p: register consensus channels + a block-relay channel, grab the
+        // oracle (blocker) before the network is consumed by start().
+        let mut network = Network::new(&context, &net).await;
+        let vote = network.register(CH_VOTE, quota(), 256);
+        let certificate = network.register(CH_CERTIFICATE, quota(), 256);
+        let resolver = network.register(CH_RESOLVER, quota(), 256);
+        let (mut block_tx, mut block_rx) = network.register(CH_BLOCK, quota(), 256).split();
+        let oracle = network.oracle.clone();
+
+        app.start();
+        let _net = network.start();
+        info!(seed, peers = roster.len(), "consensus node started");
+
+        // Outbound: drain blocks the app wants published, broadcast them.
+        context.child("block_out").spawn(move |_| async move {
+            while let Some(bytes) = blocks_out.recv().await {
+                block_tx.broadcast(bytes).await;
+            }
+        });
+        // Inbound: hand peer blocks to the app so it can verify proposals.
+        let inbound = mailbox.clone();
+        context.child("block_in").spawn(move |_| async move {
+            while let Some(bytes) = block_rx.recv().await {
+                inbound.store_peer_block(bytes);
+            }
+        });
+
+        // Engine drives consensus and runs until shutdown.
+        let engine = start_engine(
+            context.child("engine"),
+            scheme,
+            mailbox,
+            reporter,
+            oracle,
+            Tuning::default(),
+            Channels {
+                vote,
+                certificate,
+                resolver,
+            },
+        );
+        let _ = engine.await;
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rand_core::OsRng;
-
-    fn keypair() -> SigningKey {
-        SigningKey::generate(&mut OsRng)
-    }
-
-    fn addr(k: &SigningKey) -> [u8; 32] {
-        k.verifying_key().to_bytes()
-    }
-
-    #[test]
-    fn fresh_node_tip_is_genesis() {
-        let node = Node::bootstrap(GenesisConfig::default(), keypair());
-        assert_eq!(node.tip_height(), 0);
-        assert_eq!(node.pending_tx_count(), 0);
-    }
-
-    #[test]
-    fn bootstrap_applies_genesis_allocations() {
-        let alice = [1u8; 32];
-        let genesis = GenesisConfig {
-            allocations: vec![(alice, 1_000)],
-        };
-        let node = Node::bootstrap(genesis, keypair());
-        assert_eq!(node.balance(&alice), 1_000);
-    }
-
-    #[test]
-    fn submit_tx_admits_signed_tx() {
-        let mut node = Node::bootstrap(GenesisConfig::default(), keypair());
-        let tx = Transaction::signed(&keypair(), [9u8; 32], 100, 0);
-        node.submit_tx(tx).expect("admitted");
-        assert_eq!(node.pending_tx_count(), 1);
-    }
-
-    #[test]
-    fn submit_tx_rejects_unsigned() {
-        let mut node = Node::bootstrap(GenesisConfig::default(), keypair());
-        let tx = Transaction {
-            from: [1u8; 32],
-            to: [2u8; 32],
-            amount: 1,
-            nonce: 0,
-            signature: None,
-        };
-        assert!(node.submit_tx(tx).is_err());
-        assert_eq!(node.pending_tx_count(), 0);
-    }
-
-    #[test]
-    fn produce_block_advances_tip_and_moves_funds() {
-        let alice = keypair();
-        let bob = [9u8; 32];
-        let genesis = GenesisConfig {
-            allocations: vec![(addr(&alice), 1_000)],
-        };
-        let mut node = Node::bootstrap(genesis, keypair());
-
-        node.submit_tx(Transaction::signed(&alice, bob, 300, 0))
-            .unwrap();
-        node.produce_block(1).expect("produce_block");
-
-        assert_eq!(node.tip_height(), 1);
-        assert_eq!(node.balance(&addr(&alice)), 700);
-        assert_eq!(node.balance(&bob), 300);
-        // included tx is dropped from the mempool
-        assert_eq!(node.pending_tx_count(), 0);
-    }
+fn quota() -> Quota {
+    Quota::per_second(NZU32!(64))
 }

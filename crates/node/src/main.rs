@@ -1,8 +1,8 @@
 //! nanochain node entry point.
 //!
-//! Run `nanochain --seed <N>` to launch the node with that identity. Launch
+//! Run `nanochain --seed <N>` to launch a validator with that identity. Launch
 //! several processes with distinct seeds (1, 2, 3) for a local devnet — they
-//! find each other through the shared `devnet` roster and gossip transactions.
+//! find each other through the shared `devnet` roster and run Simplex consensus.
 
 use commonware_runtime::{tokio::Runner as RuntimeRunner, Runner as _};
 use ed25519_dalek::SigningKey;
@@ -34,13 +34,16 @@ fn main() {
 
     let executor = RuntimeRunner::default();
     executor.start(|context| async move {
-        let mut node = Node::bootstrap(GenesisConfig::default(), SigningKey::generate(&mut OsRng));
+        // Deterministic demo wallet funded identically on every node, so the
+        // genesis block (hence its digest) matches across the validator set.
+        let wallet = SigningKey::from_bytes(&[7u8; 32]);
+        let genesis = GenesisConfig {
+            allocations: vec![(wallet.verifying_key().to_bytes(), 1_000_000)],
+        };
+        let mut node = Node::new(genesis, SigningKey::generate(&mut OsRng));
 
-        // Inject one demo transaction so the node has something to announce.
-        // Future: an RPC server feeds real user transactions here.
-        let wallet = SigningKey::generate(&mut OsRng);
-        node.submit_tx(Transaction::signed(&wallet, [0xBBu8; 32], 100, 0))
-            .expect("valid tx");
+        // Seed one demo transaction; until an RPC exists this is the only input.
+        node.queue_tx(Transaction::signed(&wallet, [0xBBu8; 32], 100, 0));
 
         info!(seed, %listen, peers = roster.len(), "nanochain node starting");
         node.run(

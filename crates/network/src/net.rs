@@ -109,6 +109,48 @@ impl<E: Context> Channel<E> {
     pub fn into_inner(self) -> (P2pSender<PublicKey, E>, P2pReceiver<PublicKey>) {
         (self.sender, self.receiver)
     }
+
+    /// Split into independent send/receive halves so each can move into its own
+    /// task (the combined `broadcast`/`recv` can't be borrowed in two tasks).
+    pub fn split(self) -> (ChannelTx<E>, ChannelRx) {
+        (
+            ChannelTx {
+                sender: self.sender,
+            },
+            ChannelRx {
+                receiver: self.receiver,
+            },
+        )
+    }
+}
+
+/// Send half of a [`Channel`].
+pub struct ChannelTx<E: Context> {
+    sender: P2pSender<PublicKey, E>,
+}
+
+impl<E: Context> ChannelTx<E> {
+    pub async fn broadcast(&mut self, bytes: Vec<u8>) -> usize {
+        self.sender
+            .send(Recipients::All, bytes, true)
+            .await
+            .map(|reached| reached.len())
+            .unwrap_or(0)
+    }
+}
+
+/// Receive half of a [`Channel`].
+pub struct ChannelRx {
+    receiver: P2pReceiver<PublicKey>,
+}
+
+impl ChannelRx {
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        match self.receiver.recv().await {
+            Ok((_from, msg)) => Some(msg.as_ref().to_vec()),
+            Err(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
