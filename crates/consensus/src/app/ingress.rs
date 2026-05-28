@@ -15,9 +15,13 @@ pub enum Message {
         response: oneshot::Sender<Hash>,
     },
     Propose {
+        /// Digest of the parent the new block must build on (from `Context`).
+        parent: Hash,
         response: oneshot::Sender<Hash>,
     },
     Verify {
+        /// Digest of the parent the proposal claims to build on.
+        parent: Hash,
         digest: Hash,
         response: oneshot::Sender<bool>,
     },
@@ -71,11 +75,14 @@ impl Automaton for Mailbox {
         receiver.await.expect("genesis receiver dropped")
     }
 
-    async fn propose(&mut self, _ctx: Context<Hash, PublicKey>) -> oneshot::Receiver<Hash> {
+    async fn propose(&mut self, ctx: Context<Hash, PublicKey>) -> oneshot::Receiver<Hash> {
         let (response, receiver) = oneshot::channel();
         assert!(
             self.sender
-                .enqueue(Message::Propose { response })
+                .enqueue(Message::Propose {
+                    parent: ctx.parent.1,
+                    response
+                })
                 .accepted(),
             "propose enqueue rejected"
         );
@@ -84,13 +91,17 @@ impl Automaton for Mailbox {
 
     async fn verify(
         &mut self,
-        _ctx: Context<Hash, PublicKey>,
+        ctx: Context<Hash, PublicKey>,
         digest: Hash,
     ) -> oneshot::Receiver<bool> {
         let (response, receiver) = oneshot::channel();
         assert!(
             self.sender
-                .enqueue(Message::Verify { digest, response })
+                .enqueue(Message::Verify {
+                    parent: ctx.parent.1,
+                    digest,
+                    response
+                })
                 .accepted(),
             "verify enqueue rejected"
         );

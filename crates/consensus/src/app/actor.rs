@@ -80,14 +80,18 @@ impl<R: Spawner> Application<R> {
                     assert_eq!(epoch, Epoch::zero(), "multi-epoch not supported");
                     let _ = response.send(self.genesis_digest);
                 }
-                Message::Propose { response } => match self.propose() {
+                Message::Propose { parent, response } => match self.propose(parent) {
                     Ok(digest) => {
                         let _ = response.send(digest);
                     }
                     Err(e) => warn!(error = %e, "propose failed"),
                 },
-                Message::Verify { digest, response } => {
-                    let _ = response.send(self.verify(digest));
+                Message::Verify {
+                    parent,
+                    digest,
+                    response,
+                } => {
+                    let _ = response.send(self.verify(parent, digest));
                 }
                 Message::Finalize { digest } => {
                     if let Err(e) = self.finalize(digest) {
@@ -122,12 +126,19 @@ impl<R: Spawner> Application<R> {
         }
     }
 
-    /// Build the next block from mempool + state, stash it, return its digest.
-    fn propose(&mut self) -> Result<Hash, Error> {
+    /// A block we know about, proposed/received (pending) or finalized (blocks).
+    fn block_by_digest(&self, digest: &Hash) -> Option<&Block> {
+        self.pending
+            .get(digest)
+            .or_else(|| self.blocks.get_by_hash(digest))
+    }
+
+    /// Build the next block on the consensus-designated `parent`, stash it,
+    /// return its digest.
+    fn propose(&mut self, parent: Hash) -> Result<Hash, Error> {
         let parent = self
-            .blocks
-            .tip()
-            .ok_or(Error::Internal("missing tip"))?
+            .block_by_digest(&parent)
+            .ok_or(Error::Internal("propose: parent unknown"))?
             .clone();
         let signed = build_block(
             BuildParams {
@@ -146,14 +157,32 @@ impl<R: Spawner> Application<R> {
         Ok(digest)
     }
 
-    /// Dry-run apply the block against a shadow state; true iff it executes.
-    fn verify(&self, digest: Hash) -> bool {
+    /// Accept a proposal iff it builds on the consensus-designated `parent`
+    /// with a sequential height. State is dry-run only when `parent` is our
+    /// finalized tip (otherwise we lack the parent's state to execute against).
+    fn verify(&self, parent: Hash, digest: Hash) -> bool {
         let Some(block) = self.pending.get(&digest) else {
             warn!(%digest, "verify miss: block unknown locally");
             return false;
         };
-        let mut shadow = self.state.clone();
-        shadow.apply_block(block).is_ok()
+        if block.header.parent_hash != parent {
+            warn!(%digest, "verify: parent_hash does not match consensus parent");
+            return false;
+        }
+        if let Some(parent_block) = self.block_by_digest(&parent) {
+            if block.header.height != parent_block.header.height + 1 {
+                warn!(%digest, "verify: non-sequential height");
+                return false;
+            }
+        }
+        match self.blocks.tip() {
+            Some(tip) if tip.hash() == parent => {
+                let mut shadow = self.state.clone();
+                shadow.apply_block(block).is_ok()
+            }
+            // Parent is ahead of our finalized tip: structural checks only.
+            _ => true,
+        }
     }
 
     /// Commit the block: apply to state, drop included txs from mempool, persist.
@@ -237,8 +266,12 @@ mod tests {
             assert_eq!(app.balance(&addr(&alice)), 1_000);
             assert_eq!(app.pending_tx_count(), 1);
 
-            let digest = app.propose().expect("propose");
-            assert!(app.verify(digest), "self-proposed block should verify");
+            let genesis = Block::genesis().hash();
+            let digest = app.propose(genesis).expect("propose");
+            assert!(
+                app.verify(genesis, digest),
+                "self-proposed block should verify"
+            );
 
             app.finalize(digest).expect("finalize");
 
@@ -264,7 +297,7 @@ mod tests {
             let (app, _mailbox, _reporter, _blocks_out) =
                 Application::new(ctx, StateStore::new(), blocks, Mempool::new(), cfg);
 
-            assert!(!app.verify(nanochain_types::zero_hash()));
+            assert!(!app.verify(Block::genesis().hash(), nanochain_types::zero_hash()));
         });
     }
 
@@ -315,11 +348,15 @@ mod tests {
                 [7u8; 32],
                 vec![Transaction::signed(&alice, bob, 100, 0)],
             );
+            let genesis = Block::genesis().hash();
             let digest = peer_block.hash();
-            assert!(!app.verify(digest));
+            assert!(!app.verify(genesis, digest));
 
             app.store_block(peer_block.encode().to_vec());
-            assert!(app.verify(digest), "stored peer block should verify");
+            assert!(
+                app.verify(genesis, digest),
+                "stored peer block should verify"
+            );
         });
     }
 }
